@@ -1,0 +1,251 @@
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron'
+import type { AgentEvent } from '../shared/ai'
+import { APP_IPC, type AppAPI, type CollectProgress, type UpdateState } from '../shared/app'
+import { CAPTURE_IPC, type CaptureHotkey, type CursorEvent } from '../shared/capture'
+import type { IngestClip, IngestState } from '../shared/ingest'
+import { IPC, type BridgeRequest, type BridgeState, type IntegrationsAPI, type Job, type McpServerState } from '../shared/integrations'
+
+// The only surface the renderer sees: typed methods, never raw ipcRenderer.
+
+const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
+
+function subscribe<T>(channel: string, cb: (payload: T) => void) {
+  const listener = (_e: IpcRendererEvent, payload: T) => cb(payload)
+  ipcRenderer.on(channel, listener)
+  return () => void ipcRenderer.removeListener(channel, listener)
+}
+
+const integrations: IntegrationsAPI = {
+  blender: {
+    detect: () => invoke(IPC.blenderDetect),
+    setPath: (path) => invoke(IPC.blenderSetPath, path),
+    render: (req) => invoke(IPC.blenderRender, req),
+    runLive: (code) => invoke(IPC.blenderLive, code),
+  },
+  motion: {
+    render: (req) => invoke(IPC.motionRender, req),
+  },
+  mcp: {
+    list: () => invoke(IPC.mcpList),
+    save: (config) => invoke(IPC.mcpSave, config),
+    remove: (id) => invoke(IPC.mcpRemove, id),
+    connect: (id) => invoke(IPC.mcpConnect, id),
+    disconnect: (id) => invoke(IPC.mcpDisconnect, id),
+    signOut: (id) => invoke(IPC.mcpSignOut, id),
+    call: (serverId, tool, args) => invoke(IPC.mcpCall, serverId, tool, args),
+    callForAgent: (serverId, tool, args) => invoke(IPC.mcpCallForAgent, serverId, tool, args),
+  },
+  media: {
+    importUrl: (url, name, provenance) => invoke(IPC.mediaImportUrl, url, name, provenance),
+    reveal: (url) => invoke(IPC.mediaReveal, url),
+  },
+  jobs: {
+    list: () => invoke(IPC.jobsList),
+    cancel: (id) => invoke(IPC.jobsCancel, id),
+  },
+  elevenlabs: {
+    state: () => invoke(IPC.elevenState),
+    setKey: (key) => invoke(IPC.elevenSetKey, key),
+    voices: (search) => invoke(IPC.elevenVoices, search),
+    speak: (req) => invoke(IPC.elevenSpeak, req),
+    soundEffect: (req) => invoke(IPC.elevenSfx, req),
+    music: (req) => invoke(IPC.elevenMusic, req),
+    transcribe: (wav, name, languageCode) => invoke(IPC.elevenTranscribe, wav, name, languageCode),
+  },
+  ai: {
+    providers: () => invoke(IPC.aiProviders),
+    setProvider: (id, patch) => invoke(IPC.aiSetProvider, id, patch),
+    models: (id, refresh) => invoke(IPC.aiModels, id, refresh),
+    signInOpenRouter: () => invoke(IPC.aiSignInOpenRouter),
+    localAgents: (refresh) => invoke(IPC.aiLocalAgents, refresh),
+    signInLocal: (id) => invoke(IPC.aiSignInLocal, id),
+    run: (req) => invoke(IPC.aiRun, req),
+    stop: (runId) => invoke(IPC.aiStop, runId),
+    forget: (conversationId) => invoke(IPC.aiForget, conversationId),
+    attach: (conversationId, file) => invoke(IPC.aiAttach, conversationId, file),
+    detach: (conversationId, id) => invoke(IPC.aiDetach, conversationId, id),
+    attachment: (conversationId, id) => invoke(IPC.aiAttachment, conversationId, id),
+    loadChats: (projectId) => invoke(IPC.aiChatsLoad, projectId),
+    saveChats: (projectId, chats) => invoke(IPC.aiChatsSave, projectId, chats),
+    transcribe: (wav, language) => invoke(IPC.aiTranscribe, wav, language),
+    mediaModels: (provider, refresh) => invoke(IPC.aiMediaModels, provider, refresh),
+    generateImage: (req) => invoke(IPC.aiGenerateImage, req),
+    generateVideo: (req) => invoke(IPC.aiGenerateVideo, req),
+    draftText: (req) => invoke(IPC.aiDraftText, req),
+    onEvent: (cb) => subscribe<AgentEvent>(IPC.aiEvent, cb),
+  },
+  skills: {
+    list: () => invoke(IPC.skillsList),
+    read: (source, folder) => invoke(IPC.skillsRead, source, folder),
+    readFile: (source, folder, path) => invoke(IPC.skillsReadFile, source, folder, path),
+    save: (input) => invoke(IPC.skillsSave, input),
+    delete: (folder) => invoke(IPC.skillsDelete, folder),
+    import: () => invoke(IPC.skillsImport),
+    openFolder: () => invoke(IPC.skillsOpenFolder),
+  },
+  web: {
+    search: (query, max) => invoke(IPC.webSearch, query, max),
+    read: (url, maxChars) => invoke(IPC.webRead, url, maxChars),
+    screenshot: (url, opts) => invoke(IPC.webScreenshot, url, opts),
+    preview: (url) => invoke(IPC.webPreview, url),
+    watchVideo: (url, opts) => invoke(IPC.webVideo, url, opts),
+  },
+  bridge: {
+    state: () => invoke(IPC.bridgeState),
+    setEnabled: (on) => invoke(IPC.bridgeSetEnabled, on),
+    regenerateToken: () => invoke(IPC.bridgeRegenerate),
+    serve: (handler) =>
+      subscribe<BridgeRequest>(IPC.bridgeRequest, (req) => {
+        handler(req).then(
+          (result) => ipcRenderer.send(IPC.bridgeResponse, { id: req.id, ok: true, result }),
+          (err: unknown) => ipcRenderer.send(IPC.bridgeResponse, { id: req.id, ok: false, error: err instanceof Error ? err.message : String(err) }),
+        )
+      }),
+    onState: (cb) => subscribe<BridgeState>(IPC.bridgeEvent, cb),
+  },
+  onJob: (cb) => subscribe<Job>(IPC.jobEvent, cb),
+  onMcp: (cb) => subscribe<McpServerState>(IPC.mcpEvent, cb),
+}
+
+const appApi: AppAPI = {
+  files: {
+    pickMedia: () => invoke(APP_IPC.pickMedia),
+    register: (paths) => invoke(APP_IPC.registerMedia, paths),
+    pathForFile: (file) => {
+      try {
+        return webUtils.getPathForFile(file)
+      } catch {
+        return ''
+      }
+    },
+    relink: (name) => invoke(APP_IPC.relinkMedia, name),
+    reveal: (path) => invoke(APP_IPC.revealFile, path),
+    open: (path) => invoke(APP_IPC.openFile, path),
+    saveMedia: (folder, fileName, data) => invoke(APP_IPC.saveMedia, folder, fileName, data),
+    urlForPath: (path) => invoke(APP_IPC.mediaUrlForPath, path),
+    beginProxy: (key) => invoke(APP_IPC.proxyBegin, key),
+  },
+  renders: {
+    write: (projectId, key, data) => invoke(APP_IPC.renderWrite, projectId, key, data),
+    list: (projectId) => invoke(APP_IPC.renderList, projectId),
+    remove: (projectId, keys) => invoke(APP_IPC.renderRemove, projectId, keys),
+    usage: () => invoke(APP_IPC.renderUsage),
+  },
+  project: {
+    open: (path) => invoke(APP_IPC.projectOpen, path),
+    save: (path, text) => invoke(APP_IPC.projectSave, path, text),
+    saveAs: (name, text) => invoke(APP_IPC.projectSaveAs, name, text),
+    recent: () => invoke(APP_IPC.projectRecent),
+    forget: (path) => invoke(APP_IPC.projectForget, path),
+    autosave: (snapshot) => invoke(APP_IPC.projectAutosave, snapshot),
+    recovery: () => invoke(APP_IPC.projectRecovery),
+    discardRecovery: () => invoke(APP_IPC.projectDiscardRecovery),
+    setState: (state) => ipcRenderer.send(APP_IPC.projectState, state),
+    startupFile: () => invoke(APP_IPC.projectStartup),
+    confirmDiscard: (name) => invoke(APP_IPC.confirmDiscard, name),
+    onOpenRequest: (cb) => subscribe<string>(APP_IPC.openRequest, cb),
+    onSaveBeforeClose: (cb) => subscribe<void>(APP_IPC.saveBeforeClose, () => cb()),
+    closeWindow: () => ipcRenderer.send(APP_IPC.closeWindow),
+    versions: (projectId) => invoke(APP_IPC.projectVersions, projectId),
+    readVersion: (projectId, versionId, projectPath) => invoke(APP_IPC.projectReadVersion, projectId, versionId, projectPath),
+    snapshot: (snap) => invoke(APP_IPC.projectSnapshot, snap),
+    collect: (name, text) => invoke(APP_IPC.projectCollect, name, text),
+    onCollectProgress: (cb) => subscribe<CollectProgress>(APP_IPC.collectProgress, cb),
+  },
+  export: {
+    begin: (opts) => invoke(APP_IPC.exportBegin, opts),
+    pick: (opts) => invoke(APP_IPC.exportPick, opts),
+    open: (token) => invoke(APP_IPC.exportOpen, token),
+    forget: (token) => invoke(APP_IPC.exportForget, token),
+    write: (id, position, data) => invoke(APP_IPC.exportWrite, id, position, data),
+    writeFrame: (id, index, data) => invoke(APP_IPC.exportFrame, id, index, data),
+    sidecar: (exportPath, extension, text) => invoke(APP_IPC.exportSidecar, exportPath, extension, text),
+    restart: (id) => invoke(APP_IPC.exportRestart, id),
+    finish: (id) => invoke(APP_IPC.exportFinish, id),
+    abort: (id) => invoke(APP_IPC.exportAbort, id),
+    progress: (value) => ipcRenderer.send(APP_IPC.exportProgress, value),
+  },
+  window: {
+    capture: (maxWidth) => invoke(APP_IPC.captureWindow, maxWidth),
+  },
+  ingest: {
+    state: () => invoke(APP_IPC.ingestState),
+    setEnabled: (on, persist) => invoke(APP_IPC.ingestSetEnabled, on, persist),
+    regenerateToken: () => invoke(APP_IPC.ingestRegenerate),
+    setOptions: (opts) => invoke(APP_IPC.ingestOptions, opts),
+    pickFolder: () => invoke(APP_IPC.ingestPickFolder),
+    attach: () => invoke(APP_IPC.ingestAttach),
+    open: (clipId, wantProxy) => invoke(APP_IPC.ingestOpen, clipId, wantProxy),
+    progress: (clipId, encoded) => ipcRenderer.send(APP_IPC.ingestProgress, clipId, encoded),
+    complete: (clipId, result) => invoke(APP_IPC.ingestComplete, clipId, result),
+    fail: (clipId, message) => invoke(APP_IPC.ingestFail, clipId, message),
+    onState: (cb) => subscribe<IngestState>(APP_IPC.ingestEvent, cb),
+    onClip: (cb) => subscribe<IngestClip>(APP_IPC.ingestClip, cb),
+  },
+  capture: {
+    sources: (opts) => invoke(CAPTURE_IPC.sources, opts),
+    arm: (sourceId, systemAudio) => invoke(CAPTURE_IPC.arm, sourceId, systemAudio),
+    helper: () => invoke(CAPTURE_IPC.helper),
+    folder: () => invoke(CAPTURE_IPC.folder),
+    pickFolder: () => invoke(CAPTURE_IPC.pickFolder),
+    resetFolder: () => invoke(CAPTURE_IPC.resetFolder),
+    begin: (name, extension) => invoke(CAPTURE_IPC.begin, name, extension),
+    finish: (id) => invoke(CAPTURE_IPC.finish, id),
+    discard: (id) => invoke(CAPTURE_IPC.discard, id),
+    free: () => invoke(CAPTURE_IPC.free),
+    session: (state) => ipcRenderer.send(CAPTURE_IPC.session, state),
+    startAppAudio: (key, target) => invoke(CAPTURE_IPC.appAudioStart, key, target),
+    startCursor: (key, target) => invoke(CAPTURE_IPC.cursorStart, key, target),
+    stopStream: (key) => invoke(CAPTURE_IPC.streamStop, key),
+    windowInfo: (hwnd) => invoke(CAPTURE_IPC.windowInfo, hwnd),
+    focus: (hwnd) => invoke(CAPTURE_IPC.focus, hwnd),
+    recoverable: () => invoke(CAPTURE_IPC.recoverable),
+    recover: (path) => invoke(CAPTURE_IPC.recover, path),
+    forget: (path) => invoke(CAPTURE_IPC.forget, path),
+    onAudioChunk: (cb) => {
+      const listener = (_e: IpcRendererEvent, key: string, data: Uint8Array) => cb(key, data)
+      ipcRenderer.on(CAPTURE_IPC.audioChunk, listener)
+      return () => void ipcRenderer.removeListener(CAPTURE_IPC.audioChunk, listener)
+    },
+    onCursorEvents: (cb) => {
+      const listener = (_e: IpcRendererEvent, key: string, events: CursorEvent[]) => cb(key, events)
+      ipcRenderer.on(CAPTURE_IPC.cursorEvents, listener)
+      return () => void ipcRenderer.removeListener(CAPTURE_IPC.cursorEvents, listener)
+    },
+    onStreamEnded: (cb) => {
+      const listener = (_e: IpcRendererEvent, key: string, reason: string) => cb(key, reason)
+      ipcRenderer.on(CAPTURE_IPC.streamEnded, listener)
+      return () => void ipcRenderer.removeListener(CAPTURE_IPC.streamEnded, listener)
+    },
+    onHotkey: (cb) => subscribe<CaptureHotkey>(CAPTURE_IPC.hotkey, cb),
+  },
+  live: {
+    start: (config) => invoke(APP_IPC.liveStart, config),
+    send: (data) => ipcRenderer.send(APP_IPC.liveData, data),
+    stop: () => invoke(APP_IPC.liveStop),
+    onStatus: (cb) => subscribe(APP_IPC.liveStatus, cb),
+  },
+  system: {
+    gpu: () => invoke(APP_IPC.gpuInfo),
+    setGraphics: (patch) => invoke(APP_IPC.graphicsSet, patch),
+    relaunch: () => ipcRenderer.send(APP_IPC.relaunch),
+  },
+  updates: {
+    state: () => invoke(APP_IPC.updateState),
+    check: () => invoke(APP_IPC.updateCheck),
+    install: () => invoke(APP_IPC.updateInstall),
+    onState: (cb) => subscribe<UpdateState>(APP_IPC.updateEvent, cb),
+  },
+}
+
+contextBridge.exposeInMainWorld('lumen', {
+  isElectron: true,
+  testMode: process.argv.includes('--lumen-test'),
+  platform: process.platform,
+  versions: {
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+  },
+  integrations,
+  app: appApi,
+})

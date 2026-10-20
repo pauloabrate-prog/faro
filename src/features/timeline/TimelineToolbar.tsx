@@ -1,4 +1,4 @@
-import { ArrowLeftRight, Copy, Flag, Magnet, MousePointer2, MoveHorizontal, Scissors, SeparatorVertical, SquareSplitHorizontal, Trash, UnfoldHorizontal, X, ZoomIn, ZoomOut } from 'lucide-react'
+import { ArrowLeftRight, Copy, Flag, Magnet, MousePointer2, MoveHorizontal, Redo2, Scissors, SeparatorVertical, SquareSplitHorizontal, Trash, Undo2, UnfoldHorizontal, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
@@ -22,10 +22,19 @@ export function TimelineToolbar() {
   const pps = useUI((s) => s.pxPerSecond)
   const setZoom = useUI((s) => s.setZoom)
   const hasSelection = useUI((s) => s.selection.length > 0)
+  const canUndo = useEditor((s) => s.past.length > 0)
+  const canRedo = useEditor((s) => s.future.length > 0)
 
   return (
     <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line px-2">
       <TimelineSwitcher />
+      <div className="mx-1 h-4 w-px bg-line-2" />
+      <IconButton label="Undo" shortcut="mod+z" disabled={!canUndo} onClick={actions.undo}>
+        <Undo2 />
+      </IconButton>
+      <IconButton label="Redo" shortcut="mod+shift+z" disabled={!canRedo} onClick={actions.redo}>
+        <Redo2 />
+      </IconButton>
       <div className="mx-1 h-4 w-px bg-line-2" />
       <div className="flex items-center gap-0.5 rounded-[9px] bg-black/25 p-[3px] shadow-[inset_0_0_0_1px_rgb(255_255_255/0.04)]">
         <IconButton size="xs" label="Select" shortcut="v" active={tool === 'select'} onClick={() => setTool('select')}>

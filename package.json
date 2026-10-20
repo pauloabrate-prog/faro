@@ -1,7 +1,7 @@
 {
   "name": "faro-video-editor",
   "productName": "Faro",
-  "version": "1.7.2",
+  "version": "1.7.3",
   "private": true,
   "description": "Open-source desktop video editor with AI-assisted editing and a live multicamera studio.",
   "keywords": [

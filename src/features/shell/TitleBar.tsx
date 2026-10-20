@@ -158,6 +158,8 @@ function AppMenu() {
   const home = useSession((s) => s.home)
   const recent = useSession((s) => s.recent)
   const autoProxies = useUI((s) => s.autoProxies)
+  const canUndo = useEditor((s) => s.past.length > 0)
+  const canRedo = useEditor((s) => s.future.length > 0)
   return (
     <Menu onOpenChange={(open) => open && void refreshRecent()}>
       <MenuTrigger asChild>
@@ -194,6 +196,12 @@ function AppMenu() {
             <MenuSeparator />
             <MenuItem icon={<Save />} shortcut="mod+s" onSelect={() => void actions.save()}>
               Save
+            </MenuItem>
+            <MenuItem icon={<Undo2 />} shortcut="mod+z" disabled={!canUndo} onSelect={actions.undo}>
+              Undo
+            </MenuItem>
+            <MenuItem icon={<Redo2 />} shortcut="mod+shift+z" disabled={!canRedo} onSelect={actions.redo}>
+              Redo
             </MenuItem>
             <MenuItem icon={<SaveAll />} shortcut="mod+shift+s" onSelect={actions.saveAs}>
               Save as…

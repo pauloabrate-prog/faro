@@ -2,6 +2,12 @@
 
 Faro is an independent project based on the MIT-licensed Lumen editor by Mas-Inx. This changelog preserves Lumen's historical release notes and records Faro releases at the top.
 
+## [1.7.3] — 2026-10-20
+
+### Added
+
+- Undo and redo actions in the Faro menu and timeline toolbar, with availability reflecting the edit history.
+
 ## [1.7.2] — 2026-10-20
 
 Faro's first public release under its own name, based on the latest editor source and Windows build.
